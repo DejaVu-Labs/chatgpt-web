@@ -1,10 +1,7 @@
-import json
-import re
-import time
-from lorem_text import lorem
-
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse, PlainTextResponse
+import httpx
 
 app = FastAPI()
 
@@ -16,58 +13,39 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+TARGET_API_BASE_URL = "https://api.openai.com"
 
-# Define a route to handle POST requests
-@app.post("/v1/chat/completions")
-async def post_data(data: dict):
-    """Returns mock responses for testing purposes."""
+@app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD"])
+async def catch_all(request: Request, path: str):
+    query_params = request.query_params
+    request_url = f"{TARGET_API_BASE_URL}/{path}"
 
-    messages = data['messages']
-    instructions = messages[-1]['content']
+    async with httpx.AsyncClient() as client:
+        request_headers = dict(request.headers)
+        request_content = await request.body()
 
-    delay = 0
-    lines = None
-    answer = 'Default mock answer from mocked API'
+        del request_headers["host"]
 
-    try:
-        delay = re.findall(r'(?<=d)\d+',instructions)[0]
-    except:
-        pass
-
-    try:
-        lines = re.findall(r'(?<=l)\d+',instructions)[0]
-    except:
-        pass
-
-
-    if delay:
-        time.sleep(int(delay))
-
-    if lines:
-        answer = "\n".join([lorem.sentence() for _ in range(int(lines))])
-
-    response = {
-        "id": 0,
-        "choices": [{
-            "index": 0,
-            "finish_reason": "stop",
-            "message": {"content": answer,"role": "assistant"}
-        }]
-    }
-    return response
-
-
-@app.get('/v1/models')
-async def list_models():
-    """Returns a list of models to get app to work."""
-    with open('/work/models_response.json') as f:
-        result = json.load(f)
-
-    return result
-
-
-@app.post('/')
-async def post_data(data: dict):
-    """Basic route for testing the API works"""
-    result = {"message": "Data received", "data": data}
-    return result
+        try:
+            resp = await client.request(
+                method=request.method,
+                url=request_url,
+                headers=request_headers,
+                params=query_params,
+                content=request_content,
+                timeout=60.0
+            )
+            
+            if "application/json" in resp.headers.get("Content-Type", ""):
+                return JSONResponse(content=resp.json(), status_code=resp.status_code)
+            else:
+                return Response(content=resp.content, status_code=resp.status_code, headers=resp.headers)
+        
+        except httpx.HTTPStatusError as exc:
+            return JSONResponse(content={"message": "Error with request", "detail": str(exc)}, status_code=exc.response.status_code)
+        except httpx.RequestError as exc:
+            return JSONResponse(content={"message": "Error connecting to target API", "detail": str(exc)}, status_code=500)
+        except ValueError as exc:
+            return JSONResponse(content={"message": "Response parsing error", "detail": str(exc)}, status_code=500)
+        except Exception as exc:
+            return JSONResponse(content={"message": "An unexpected error occurred", "detail": str(exc)}, status_code=500)
